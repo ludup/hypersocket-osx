@@ -72,26 +72,24 @@ static bool ensure_control_socket_is_open()
     
 }
 
-static int add_rule(const char* network_addr, const char* subnet_mask, const char* forward_to, unsigned short forward_port)
+static int add_rule(const char* ip, unsigned short port, const char* forward_to, unsigned short forward_port)
 {
     if(!ensure_control_socket_is_open())
         return -1;
     
     struct in_addr network;
-    struct in_addr subnet;
     struct in_addr forward;
     
     inet_aton(forward_to, &forward);
-    inet_aton(subnet_mask, &subnet);
-    inet_aton(network_addr, &network);
+    inet_aton(ip, &network);
     
-    socklen_t size = (sizeof(in_addr_t)*3) + sizeof(unsigned short);
+    socklen_t size = (sizeof(in_addr_t)*2) + (sizeof(unsigned short)*2);
     void* tmp = malloc(size);
     void* tmp2 = tmp;
     memcpy(tmp2, &network.s_addr, sizeof(in_addr_t));
     tmp2+=sizeof(in_addr_t);
-    memcpy(tmp2, &subnet.s_addr, sizeof(in_addr_t));
-    tmp2+=sizeof(in_addr_t);
+    memcpy(tmp2, &port, sizeof(unsigned short));
+    tmp2+=sizeof(unsigned short);
     memcpy(tmp2, &forward.s_addr, sizeof(in_addr_t));
     tmp2+=sizeof(in_addr_t);
     memcpy(tmp2, &forward_port, sizeof(unsigned short));
@@ -110,26 +108,24 @@ remove_exit:
     
 }
 
-static int remove_rule(const char* network_addr, const char* subnet_mask, const char* forward_to, unsigned short forward_port)
+static int remove_rule(const char* ip, unsigned short port, const char* forward_to, unsigned short forward_port)
 {
     if(!ensure_control_socket_is_open())
         return -1;
     
     struct in_addr network;
-    struct in_addr subnet;
     struct in_addr forward;
     
     inet_aton(forward_to, &forward);
-    inet_aton(subnet_mask, &subnet);
-    inet_aton(network_addr, &network);
+    inet_aton(ip, &network);
     
-    socklen_t size = (sizeof(in_addr_t)*3) + sizeof(unsigned short);
+    socklen_t size = (sizeof(in_addr_t)*2) + (sizeof(unsigned short)*2);
     void* tmp = malloc(size);
     void* tmp2 = tmp;
     memcpy(tmp2, &network.s_addr, sizeof(in_addr_t));
     tmp2+=sizeof(in_addr_t);
-    memcpy(tmp2, &subnet.s_addr, sizeof(in_addr_t));
-    tmp2+=sizeof(in_addr_t);
+    memcpy(tmp2, &port, sizeof(unsigned short));
+    tmp2+=sizeof(unsigned short);
     memcpy(tmp2, &forward.s_addr, sizeof(in_addr_t));
     tmp2+=sizeof(in_addr_t);
     memcpy(tmp2, &forward_port, sizeof(unsigned short));
@@ -147,7 +143,7 @@ remove_exit:
     return retval;
 }
 
-static int lookup_original_destination(const char* source_addr, unsigned short source_port, 
+/*static int lookup_original_destination(const char* source_addr, unsigned short source_port, 
                                        const char* forward_to, unsigned short forward_port,
                                        struct in_addr* dest_ip, unsigned short* dest_port) {
     if(!ensure_control_socket_is_open())
@@ -186,20 +182,23 @@ static int lookup_original_destination(const char* source_addr, unsigned short s
 lookup_exit:
     free(tmp);
     return retval;
-}
+}*/
 
 static int update_settings(bool log_redirected_packets, bool log_other_packets)
 {
     if(!ensure_control_socket_is_open())
         return -1;
     
-    socklen_t size = (sizeof(bool)*2);
+    socklen_t size = (sizeof(int)*2);
+    
+    int t1 = log_redirected_packets ? 1 : 0;
+    int t2 = log_other_packets ? 1 : 0;
     
     void* tmp = malloc(size);
     void* tmp2 = tmp;
-    memcpy(tmp2, &log_redirected_packets, sizeof(bool));
-    tmp2+=sizeof(bool);
-    memcpy(tmp2, &log_other_packets, sizeof(bool));
+    memcpy(tmp2, &t1, sizeof(int));
+    tmp2+=sizeof(int);
+    memcpy(tmp2, &t2, sizeof(int));
     
     int retval = 1;
     if (setsockopt(g_sock, SYSPROTO_CONTROL, REDIRECTNKE_UPDATE_SETTINGS, tmp, size) != 0) {
@@ -215,22 +214,74 @@ update_settings_exit:
     
 }
 
+void usage()
+{
+    printf("usage: redirect add|remove <ip> <port> <forward_to_ip> <forward_to_port>\n");
+    printf("       redirect log on|off\n");
+}
+
 int main(int argc, const char * argv[])
 {
-    
-    int ret = connect_control_socket();
+    int ret = 1;
+
+    for(int i=0;i<argc;i++) {
+        printf("%s\n", argv[i]);
+    }
+    ret = connect_control_socket();
     
     if(ret==0)
     {
-        
-        
-        
-        
-        
-        ret = close_control_socket();
+        if(argc==3 || argc ==6)
+        {
+            if(argc==3)
+            {
+                if(strcmp("log", argv[1])==0)
+                {
+                    bool on = strcmp("on", argv[2])==0;
+                    ret = update_settings(on, on);
+                }
+                else {
+                    usage();
+                }
+                
+            } else {
+                if(strcmp("add", argv[1])==0) 
+                {
+                    ret = add_rule(argv[2], strtoul(argv[3],NULL,0), argv[4], strtoul(argv[5],NULL,0));
+                } 
+                else if(strcmp("remove", argv[1])==0)
+                {
+                    ret = remove_rule(argv[2], strtoul(argv[3],NULL,0), argv[4], strtoul(argv[5],NULL,0));
+                } 
+                else {
+                    usage();
+                }
+
+            }
+
+            if(ret!=0)
+            {
+                printf("Failed to %s rule\n", argv[1]);
+                
+            }
+            
+            close_control_socket();
+        }
+        else {
+            usage();
+        }
     }
-    
-    fprintf(stderr, "RedirectCMD: Returning %d\n", ret);
+    else {
+       printf("Failed to connect to kernel extension. Are you running with privileges?\n");
+    }
+        
+    if(ret==0)
+    {
+        
+    }
+    else {
+        
+    }
     
     return ret;
 }

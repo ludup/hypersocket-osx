@@ -57,8 +57,8 @@ static struct redirect_rules g_rule_list;
 
 struct redirect_rule {
     TAILQ_ENTRY(redirect_rule)   link; 
-    in_addr_t network_addr;
-    in_addr_t subnet_mask;
+    in_addr_t ip;
+    unsigned short port;
     in_addr_t forward_to_ip;
     unsigned short forward_to_port;
 };
@@ -167,27 +167,23 @@ static void log_ip_packet(mbuf_t *data, int dir, const char* info)
     
 }
 
-static void log_rule(const char* info, in_addr_t network_addr, in_addr_t subnet_mask, in_addr_t forward_to_ip, unsigned short forward_port)
+static void log_rule(const char* info, in_addr_t ip, unsigned short port, in_addr_t forward_to_ip, unsigned short forward_port)
 {
     
     char net[32];
     bzero(net, sizeof(net));
-    inet_ntop(AF_INET, &network_addr, net, sizeof(net));
-    
-    char sub[32];
-    bzero(sub, sizeof(sub));
-    inet_ntop(AF_INET, &subnet_mask, sub, sizeof(sub));
+    inet_ntop(AF_INET, &ip, net, sizeof(net));
     
     char fwd[32];
     bzero(fwd, sizeof(fwd));
     inet_ntop(AF_INET, &forward_to_ip, fwd, sizeof(fwd));
     
-    log("%s network %s subnet mask %s forwarding to %s:%d", info, net, sub, fwd, forward_port);
+    log("%s %s:%d forwarding to %s:%d", info, net, port, fwd, forward_port);
     
 }
 
-static struct redirect_rule *
-find_rule_by_network(in_addr_t network_addr, in_addr_t subnet_mask)
+/*static struct redirect_rule *
+find_rule_by_network(in_addr_t network_addr, unsigned short port)
 {
 	struct redirect_rule *entry, *next_entry;
     struct redirect_rule *result = NULL;
@@ -206,10 +202,10 @@ find_rule_by_network(in_addr_t network_addr, in_addr_t subnet_mask)
     
     lck_mtx_unlock(g_mutex);
     return result;
-}
+}*/
 
 static struct redirect_rule *
-find_rule_by_destination_ip(in_addr_t ip)
+find_rule_by_destination_ip(in_addr_t ip, unsigned short port)
 {
 	struct redirect_rule *entry, *next_entry;
     struct redirect_rule *result = NULL;
@@ -219,7 +215,7 @@ find_rule_by_destination_ip(in_addr_t ip)
     for (entry = TAILQ_FIRST(&g_rule_list); entry; entry = next_entry) 
     {
         next_entry = TAILQ_NEXT(entry, link);
-        if ((ip & entry->subnet_mask) == (entry->network_addr & entry->subnet_mask)) {
+        if (ip == entry->ip && port == entry->port) {
             result = entry;
             break;
         }
@@ -319,7 +315,7 @@ find_or_create_output_redirection(in_addr_t source_ip, unsigned short source_por
     if(entry)
         return entry;
     
-    struct redirect_rule* rule = find_rule_by_destination_ip(dest_ip);
+    struct redirect_rule* rule = find_rule_by_destination_ip(dest_ip, dest_port);
     if(rule) 
     {
         return add_redirection(source_ip, source_port, dest_ip, dest_port, rule->forward_to_ip, rule->forward_to_port);
@@ -329,26 +325,26 @@ find_or_create_output_redirection(in_addr_t source_ip, unsigned short source_por
     }
 }
 
-static int remove_rule(in_addr_t network_addr, in_addr_t subnet_mask, in_addr_t forward_to_ip, unsigned short forward_port)
+static int remove_rule(in_addr_t ip, unsigned short port, in_addr_t forward_to_ip, unsigned short forward_port)
 {
     struct redirect_rule *entry, *next_entry;
     int result = KERN_FAILURE;
     lck_mtx_lock(g_mutex);
     
-    log_rule("Removing rule for", network_addr, subnet_mask, forward_to_ip, ntohs(forward_port));  
+    log_rule("Removing rule for", ip, port, forward_to_ip, ntohs(forward_port));  
     
     for (entry = TAILQ_FIRST(&g_rule_list); entry; entry = next_entry) 
     {
         next_entry = TAILQ_NEXT(entry, link);
-        if (entry->network_addr == network_addr 
-            && entry->subnet_mask == subnet_mask
+        if (entry->ip == ip 
+            && entry->port == port
             && entry->forward_to_ip == forward_to_ip
             && entry->forward_to_port == forward_port) {
             
             
             TAILQ_REMOVE(&g_rule_list, entry, link);
             
-            log_rule("Found and removed rule for", network_addr, subnet_mask, forward_to_ip, ntohs(forward_port));  
+            log_rule("Found and removed rule for", ip, port, forward_to_ip, ntohs(forward_port));  
             
             result = KERN_SUCCESS;
             break;
@@ -358,26 +354,26 @@ static int remove_rule(in_addr_t network_addr, in_addr_t subnet_mask, in_addr_t 
     lck_mtx_unlock(g_mutex);
     
     if(result==KERN_FAILURE) {
-        log_rule("Rule not found for", network_addr, subnet_mask, forward_to_ip, ntohs(forward_port));  
+        log_rule("Rule not found for", ip, ntohs(port), forward_to_ip, ntohs(forward_port));  
     }
     
     return result;
 }
 
-static int add_rule(in_addr_t network_addr, in_addr_t subnet_mask, in_addr_t forward_to_ip, unsigned short forward_port)
+static int add_rule(in_addr_t ip, unsigned short port, in_addr_t forward_to_ip, unsigned short forward_port)
 {
     int ret = 0;
     struct redirect_rule* entry = NULL;
     
-    log_rule("Adding rule for", network_addr, subnet_mask, forward_to_ip, ntohs(forward_port));  
+    log_rule("Adding rule for", ip, ntohs(port), forward_to_ip, ntohs(forward_port));  
     
-    entry = find_rule_by_network(network_addr, subnet_mask);
+    entry = find_rule_by_destination_ip(ip, port);
     if (entry)
     {
         entry->forward_to_ip = forward_to_ip;
         entry->forward_to_port = forward_port;
         
-        log_rule("Found and updated rule for", network_addr, subnet_mask, forward_to_ip, ntohs(forward_port));  
+        log_rule("Found and updated rule for", ip, ntohs(port), forward_to_ip, ntohs(forward_port));  
     }
     else
     {
@@ -393,8 +389,8 @@ static int add_rule(in_addr_t network_addr, in_addr_t subnet_mask, in_addr_t for
         
         
         
-        entry->network_addr = network_addr;
-        entry->subnet_mask = subnet_mask;
+        entry->ip = ip;
+        entry->port = port;
         entry->forward_to_ip = forward_to_ip;
         entry->forward_to_port = forward_port;
         
@@ -402,7 +398,7 @@ static int add_rule(in_addr_t network_addr, in_addr_t subnet_mask, in_addr_t for
         
         TAILQ_INSERT_TAIL(&g_rule_list, entry, link);
         
-        log_rule("Added rule for", network_addr, subnet_mask, forward_to_ip, ntohs(forward_port));  
+        log_rule("Added rule for", ip, ntohs(port), forward_to_ip, ntohs(forward_port));  
         
         lck_mtx_unlock(g_mutex);
         
@@ -746,7 +742,7 @@ static errno_t ctl_get(kern_ctl_ref ctl_ref, u_int32_t unit, void* unit_info, in
 {
     
     switch(opt) {
-        case REDIRECTNKE_GET_ORIGINAL_DESTINATION:
+        /*case REDIRECTNKE_GET_ORIGINAL_DESTINATION:
         {
             
             if(*len < ((sizeof(unsigned short) * 2) + (sizeof(in_addr_t) * 2))) {
@@ -803,7 +799,7 @@ static errno_t ctl_get(kern_ctl_ref ctl_ref, u_int32_t unit, void* unit_info, in
             memcpy(data+sizeof(in_addr_t), &redirect->dest_port, sizeof(unsigned short));
             
             return KERN_SUCCESS;
-        }
+        }*/
         default:
         {
             log("Operation not supported");
@@ -825,15 +821,15 @@ static errno_t ctl_set(kern_ctl_ref ctl_ref, u_int32_t unit, void* unit_info, in
 #endif
             void* tmp = data;
             
-            in_addr_t network_addr = *(in_addr_t*)tmp;
+            in_addr_t ip = *(in_addr_t*)tmp;
             tmp += sizeof(in_addr_t);
-            in_addr_t subnet_mask = *(in_addr_t*)tmp;
-            tmp += sizeof(in_addr_t);
+            unsigned short port = *(unsigned short*)tmp;
+            tmp += sizeof(unsigned short);
             in_addr_t forward_ip = *(in_addr_t*)tmp;
             tmp += sizeof(in_addr_t);
             unsigned short forward_port = *(unsigned short*)tmp;
             
-            int ret = add_rule(network_addr, subnet_mask, forward_ip, htons(forward_port));
+            int ret = add_rule(ip, htons(port), forward_ip, htons(forward_port));
             
             if(ret != 0)
                 return KERN_FAILURE;
@@ -847,15 +843,15 @@ static errno_t ctl_set(kern_ctl_ref ctl_ref, u_int32_t unit, void* unit_info, in
 #endif
             void* tmp = data;
             
-            in_addr_t network_addr = *(in_addr_t*)tmp;
+            in_addr_t ip = *(in_addr_t*)tmp;
             tmp += sizeof(in_addr_t);
-            in_addr_t subnet_mask = *(in_addr_t*)tmp;
-            tmp += sizeof(in_addr_t);
+            unsigned short port = *(unsigned short*)tmp;
+            tmp += sizeof(unsigned short);
             in_addr_t forward_ip = *(in_addr_t*)tmp;
             tmp += sizeof(in_addr_t);
             unsigned short forward_port = *(unsigned short*)tmp;
             
-            int ret = remove_rule(network_addr, subnet_mask, forward_ip, htons(forward_port));
+            int ret = remove_rule(ip, htons(port), forward_ip, htons(forward_port));
             
             if(ret != 0) {
                 return KERN_FAILURE;
@@ -870,10 +866,11 @@ static errno_t ctl_set(kern_ctl_ref ctl_ref, u_int32_t unit, void* unit_info, in
 #endif
             void* tmp = data;
             
-            log_redirected_packets = *(boolean_t*)tmp;
-            tmp += sizeof(boolean_t);
-            log_other_packets = *(boolean_t*)tmp;
+            log_redirected_packets = (*(int*)tmp)==1;
+            tmp += sizeof(int);
+            log_other_packets = (*(int*)tmp)==1;
             
+            log("Packet logging is now %s", log_redirected_packets ? "on" : "off");
             return KERN_SUCCESS;
         }
         default:
@@ -1016,8 +1013,8 @@ kern_return_t RedirectNKE_stop (kmod_info_t * ki, void * d) {
     
     if (g_filter_registered)
     {
-#if DEBUG
         int err = ipf_remove(g_filter_ref);
+#if DEBUG
         log("ipf_remove returned %d", err);
 #endif
         g_filter_registered = FALSE;
